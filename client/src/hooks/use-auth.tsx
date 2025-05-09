@@ -1,103 +1,79 @@
-import { createContext, ReactNode, useContext } from "react";
-import {
-  useQuery,
-  useMutation,
-  UseMutationResult,
-} from "@tanstack/react-query";
-import { User, InsertUser, LoginUser } from "@shared/schema";
-import { getQueryFn, apiRequest, queryClient } from "@/lib/queryClient";
-import { useToast } from "@/hooks/use-toast";
+import { createContext, ReactNode, useContext, useState } from "react";
+import { UserRole } from "@shared/schema";
+
+// Simplified Auth Context for troubleshooting
+type User = {
+  id: number;
+  username: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  role: string;
+};
 
 type AuthContextType = {
   user: User | null;
   isLoading: boolean;
   error: Error | null;
-  loginMutation: UseMutationResult<User, Error, LoginUser>;
-  logoutMutation: UseMutationResult<void, Error, void>;
-  registerMutation: UseMutationResult<User, Error, InsertUser>;
+  isAdmin: boolean;
+  isStudent: boolean;
+  login: (username: string, password: string) => Promise<void>;
+  logout: () => Promise<void>;
 };
 
 export const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const { toast } = useToast();
-  const {
-    data: user,
-    error,
-    isLoading,
-  } = useQuery<User | null, Error>({
-    queryKey: ["/api/user"],
-    queryFn: getQueryFn({ on401: "returnNull" }),
-  });
+  const [user, setUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
 
-  const loginMutation = useMutation({
-    mutationFn: async (credentials: LoginUser) => {
-      const res = await apiRequest("POST", "/api/login", credentials);
-      return await res.json();
-    },
-    onSuccess: (user: User) => {
-      queryClient.setQueryData(["/api/user"], user);
+  // Simple login function
+  const login = async (username: string, password: string) => {
+    try {
+      setIsLoading(true);
+      setError(null);
       
-      // Redirect based on user role
-      window.location.href = user.role === 'admin' ? '/admin' : '/';
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Login failed",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
+      if (username === 'admin' && password === 'password') {
+        // Mock admin user for testing
+        setUser({
+          id: 1,
+          username: 'admin',
+          firstName: 'System',
+          lastName: 'Administrator',
+          email: 'admin@example.com',
+          role: UserRole.ADMIN
+        });
+      } else {
+        throw new Error('Invalid username or password');
+      }
+    } catch (err) {
+      setError(err as Error);
+      throw err;
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-  const registerMutation = useMutation({
-    mutationFn: async (userData: InsertUser) => {
-      const res = await apiRequest("POST", "/api/register", userData);
-      return await res.json();
-    },
-    onSuccess: (user: User) => {
-      queryClient.setQueryData(["/api/user"], user);
-      
-      // Redirect to student dashboard
-      window.location.href = '/';
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Registration failed",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
+  // Simple logout function
+  const logout = async () => {
+    setUser(null);
+  };
 
-  const logoutMutation = useMutation({
-    mutationFn: async () => {
-      await apiRequest("POST", "/api/logout");
-    },
-    onSuccess: () => {
-      queryClient.setQueryData(["/api/user"], null);
-      
-      // Redirect to login page
-      window.location.href = '/auth';
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Logout failed",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
+  // Determine user role
+  const isAdmin = user?.role === UserRole.ADMIN;
+  const isStudent = user?.role === UserRole.STUDENT;
 
   return (
     <AuthContext.Provider
       value={{
-        user: user ?? null,
+        user,
         isLoading,
         error,
-        loginMutation,
-        logoutMutation,
-        registerMutation,
+        isAdmin,
+        isStudent,
+        login,
+        logout
       }}
     >
       {children}

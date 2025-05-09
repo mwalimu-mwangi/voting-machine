@@ -1,37 +1,21 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
-import { config } from "dotenv";
-import multer from "multer";
-
-// Load environment variables
-config();
-
-// Ensure SESSION_SECRET is set
-if (!process.env.SESSION_SECRET) {
-  process.env.SESSION_SECRET = "campus-vote-dev-secret";
-  console.warn("Warning: SESSION_SECRET not set, using default value for development");
-}
+import cors from "cors";
 
 const app = express();
+
+// Enable CORS for all routes, important for Replit
+app.use(cors({
+  origin: true, // Automatically use the request origin
+  credentials: true, // Important for authentication cookies
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Setup file upload middleware
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB max file size
-  },
-});
-
-// Make upload middleware available for routes
-app.use((req: any, res, next) => {
-  req.upload = upload;
-  next();
-});
-
-// Request logger middleware
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -47,15 +31,8 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      
-      // Only log response data if not too big
-      if (capturedJsonResponse && !Array.isArray(capturedJsonResponse)) {
-        const responseStr = JSON.stringify(capturedJsonResponse);
-        if (responseStr.length < 80) {
-          logLine += ` :: ${responseStr}`;
-        } else {
-          logLine += ` :: [Response data too large]`;
-        }
+      if (capturedJsonResponse) {
+        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
 
       if (logLine.length > 80) {
@@ -72,18 +49,17 @@ app.use((req, res, next) => {
 (async () => {
   const server = await registerRoutes(app);
 
-  // Global error handler
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
-    
-    console.error(`Error: ${message}`);
-    console.error(err.stack);
 
     res.status(status).json({ message });
+    throw err;
   });
 
-  // Setup Vite in development and serve static files in production
+  // importantly only setup vite in development and after
+  // setting up all the other routes so the catch-all route
+  // doesn't interfere with the other routes
   if (app.get("env") === "development") {
     await setupVite(app, server);
   } else {
@@ -99,7 +75,6 @@ app.use((req, res, next) => {
     host: "0.0.0.0",
     reusePort: true,
   }, () => {
-    log(`CampusVote server running on port ${port}`);
-    log(`Environment: ${app.get("env")}`);
+    log(`serving on port ${port}`);
   });
 })();

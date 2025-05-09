@@ -1,0 +1,101 @@
+✅ Functional Requirements – Student Voting System
+1. User Roles
+a. Admin
+Can log in securely to the system.
+
+Can create and manage:
+
+Departments (e.g., Engineering, Science)
+
+Courses (e.g., Land Survey, IT)
+
+Levels (3, 4, 5, 6)
+
+Can upload verified student ID numbers for pre-validation.
+
+Can create and manage election positions (e.g., President, Secretary).
+
+Can create and manage candidates for various positions.
+
+Can view all registered students and verify their details.
+
+Can open or close voting (via the Settings panel).
+
+Can monitor vote results in real-time through graphical dashboards.
+
+Can reset voting data to prepare for a new election cycle.
+
+Can manage global system settings (e.g., enable/disable registration or voting).
+
+b. Student (Voter)
+Can register into the system using:
+
+Valid student ID (verified against the database).
+
+First name, last name.
+
+Select department, course, and level from dropdowns (populated by admin).
+
+Password for account creation.
+
+Can log in securely using student ID and password.
+
+Can view available positions and list of candidates.
+
+Can vote for candidates (only once per position).
+
+Can view confirmation of votes cast.
+
+Can view general vote results after voting is closed (if enabled).
+
+2. System Modules
+Authentication Module: Secure login and registration for students and admin using JWT.
+
+Student Management Module:
+
+Student registration
+
+Pre-validation of student ID
+
+Student login
+
+Admin Dashboard Module:
+
+Create/manage departments, courses, and levels
+
+Manage students, positions, and candidates
+
+View statistics and graphs
+
+Voting Module:
+
+Cast vote (with validation to prevent multiple votes)
+
+Display candidates
+
+Confirm voting status
+
+Results & Analytics Module:
+
+Show real-time vote counts using charts/graphs
+
+Filter by position, course, or level
+
+System Settings Module:
+
+Enable/disable voting or registration
+
+Reset election
+
+Manage notifications/messages
+
+3. Other Key Functionalities
+Real-time vote updates (using Socket.io or polling).
+
+Server-side validation for all inputs.
+
+Audit logging of key admin actions (e.g., vote reset).
+
+Responsive frontend interface (web-first).
+
+PostgreSQL used for storing all data securely.

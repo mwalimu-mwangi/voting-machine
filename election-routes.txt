@@ -1,0 +1,275 @@
+  // === Election Routes ===
+  // Get all elections
+  app.get("/api/elections", async (req, res) => {
+    try {
+      const elections = await storage.getElections();
+      res.json(elections);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Get active elections
+  app.get("/api/elections/active", async (req, res) => {
+    try {
+      const elections = await storage.getActiveElections();
+      res.json(elections);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Get election by ID
+  app.get("/api/elections/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const election = await storage.getElection(id);
+      
+      if (!election) {
+        return res.status(404).json({ message: "Election not found" });
+      }
+      
+      res.json(election);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Get positions for an election
+  app.get("/api/elections/:id/positions", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const positions = await storage.getElectionPositions(id);
+      res.json(positions);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Create election (admin only)
+  app.post("/api/admin/elections", async (req, res) => {
+    try {
+      // First validate with the form schema
+      const formData = electionFormSchema.parse(req.body);
+      
+      // Create dates from the form inputs
+      const startDate = new Date(`${formData.startDate}T${formData.startTime}`);
+      const endDate = new Date(`${formData.endDate}T${formData.endTime}`);
+      
+      // Check that dates are valid
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+        return res.status(400).json({ message: "Invalid date format" });
+      }
+      
+      // Check that end date is after start date
+      if (endDate <= startDate) {
+        return res.status(400).json({ message: "End date must be after start date" });
+      }
+      
+      // Prepare election data
+      const electionData = {
+        name: formData.name,
+        startDate,
+        endDate,
+        status: ElectionStatus.UPCOMING,
+        positions: formData.positions
+      };
+      
+      // Validate with the storage schema
+      const validatedData = insertElectionSchema.parse(electionData);
+      const election = await storage.createElection(validatedData);
+      
+      // Create election position mappings in the junction table
+      if (Array.isArray(formData.positions)) {
+        for (const positionId of formData.positions) {
+          await storage.addPositionToElection({
+            electionId: election.id,
+            positionId
+          });
+        }
+      }
+      
+      broadcastUpdate("electionCreated", election);
+      res.status(201).json(election);
+    } catch (error: any) {
+      if (error.name === "ZodError") {
+        return res.status(400).json({ message: "Invalid election data", errors: error.errors });
+      }
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Update election (admin only)
+  app.put("/api/admin/elections/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      
+      // Check if election exists
+      const existingElection = await storage.getElection(id);
+      if (!existingElection) {
+        return res.status(404).json({ message: "Election not found" });
+      }
+      
+      // Handle form updates vs partial updates
+      let updateData: any;
+      
+      if (req.body.startDate && req.body.startTime && req.body.endDate && req.body.endTime) {
+        // It's a form update
+        const formData = electionFormSchema.parse(req.body);
+        
+        // Create dates from the form inputs
+        const startDate = new Date(`${formData.startDate}T${formData.startTime}`);
+        const endDate = new Date(`${formData.endDate}T${formData.endTime}`);
+        
+        // Check that dates are valid
+        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+          return res.status(400).json({ message: "Invalid date format" });
+        }
+        
+        // Check that end date is after start date
+        if (endDate <= startDate) {
+          return res.status(400).json({ message: "End date must be after start date" });
+        }
+        
+        updateData = {
+          name: formData.name,
+          startDate,
+          endDate,
+          positions: formData.positions
+        };
+        
+        // Update position mappings if positions have changed
+        if (Array.isArray(formData.positions)) {
+          // Get current positions
+          const currentPositions = await storage.getElectionPositions(id);
+          const currentPositionIds = currentPositions.map(p => p.id);
+          
+          // Add new positions
+          for (const positionId of formData.positions) {
+            if (!currentPositionIds.includes(positionId)) {
+              await storage.addPositionToElection({
+                electionId: id,
+                positionId
+              });
+            }
+          }
+          
+          // Remove positions that were removed
+          for (const positionId of currentPositionIds) {
+            if (!formData.positions.includes(positionId)) {
+              await storage.removePositionFromElection(id, positionId);
+            }
+          }
+        }
+      } else {
+        // It's a partial update
+        updateData = insertElectionSchema.partial().parse(req.body);
+      }
+      
+      const election = await storage.updateElection(id, updateData);
+      
+      broadcastUpdate("electionUpdated", election);
+      res.json(election);
+    } catch (error: any) {
+      if (error.name === "ZodError") {
+        return res.status(400).json({ message: "Invalid election data", errors: error.errors });
+      }
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Update election status (admin only)
+  app.put("/api/admin/elections/:id/status", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const schema = z.object({
+        status: z.enum([ElectionStatus.UPCOMING, ElectionStatus.ACTIVE, ElectionStatus.COMPLETED])
+      });
+      
+      const { status } = schema.parse(req.body);
+      const election = await storage.updateElectionStatus(id, status);
+      
+      if (!election) {
+        return res.status(404).json({ message: "Election not found" });
+      }
+      
+      broadcastUpdate("electionStatusUpdated", election);
+      res.json(election);
+    } catch (error: any) {
+      if (error.name === "ZodError") {
+        return res.status(400).json({ message: "Invalid status", errors: error.errors });
+      }
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Delete election (admin only)
+  app.delete("/api/admin/elections/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const success = await storage.deleteElection(id);
+      
+      if (!success) {
+        return res.status(400).json({ message: "Failed to delete election" });
+      }
+      
+      broadcastUpdate("electionDeleted", { id });
+      res.status(204).end();
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Add position to election (admin only)
+  app.post("/api/admin/elections/:id/positions", async (req, res) => {
+    try {
+      const electionId = parseInt(req.params.id);
+      const schema = z.object({
+        positionId: z.number().int().positive()
+      });
+      
+      const { positionId } = schema.parse(req.body);
+      const electionPosition = await storage.addPositionToElection({
+        electionId,
+        positionId
+      });
+      
+      broadcastUpdate("electionPositionAdded", {
+        electionId,
+        positionId
+      });
+      
+      res.status(201).json(electionPosition);
+    } catch (error: any) {
+      if (error.name === "ZodError") {
+        return res.status(400).json({ message: "Invalid position data", errors: error.errors });
+      }
+      if (error.message === "Position is already in this election") {
+        return res.status(400).json({ message: error.message });
+      }
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Remove position from election (admin only)
+  app.delete("/api/admin/elections/:electionId/positions/:positionId", async (req, res) => {
+    try {
+      const electionId = parseInt(req.params.electionId);
+      const positionId = parseInt(req.params.positionId);
+      
+      const success = await storage.removePositionFromElection(electionId, positionId);
+      
+      if (!success) {
+        return res.status(404).json({ message: "Election position not found" });
+      }
+      
+      broadcastUpdate("electionPositionRemoved", {
+        electionId,
+        positionId
+      });
+      
+      res.status(204).end();
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });

@@ -1,16 +1,15 @@
 import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
-import { Express, Request } from "express";
+import { Express } from "express";
 import session from "express-session";
 import { scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import { storage } from "./storage";
-import { User, insertUserSchema, loginUserSchema } from "@shared/schema";
-import { z } from "zod";
+import { User as SelectUser, UserRole } from "@shared/schema";
 
 declare global {
   namespace Express {
-    interface User extends User {}
+    interface User extends SelectUser {}
   }
 }
 
@@ -30,18 +29,15 @@ async function comparePasswords(supplied: string, stored: string) {
 }
 
 export function setupAuth(app: Express) {
-  if (!process.env.SESSION_SECRET) {
-    console.warn("No SESSION_SECRET environment variable set, using a default one for development");
-  }
-  
   const sessionSettings: session.SessionOptions = {
-    secret: process.env.SESSION_SECRET || "campus-vote-secret-key-dev",
+    secret: process.env.SESSION_SECRET || "voting-system-secret-key",
     resave: false,
     saveUninitialized: false,
     store: storage.sessionStore,
     cookie: {
-      secure: app.get("env") === "production",
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      secure: false, // Set to false for Replit
+      sameSite: "lax"
     }
   };
 
@@ -56,29 +52,16 @@ export function setupAuth(app: Express) {
         const user = await storage.getUserByUsername(username);
         if (!user || !(await comparePasswords(password, user.password))) {
           return done(null, false, { message: "Invalid username or password" });
+        } else {
+          return done(null, user);
         }
-        
-        // Update last login time
-        await storage.updateUserLastLogin(user.id);
-        
-        // Log login activity
-        await storage.logActivity(
-          user.id, 
-          "Login", 
-          `User ${user.username} logged in`
-        );
-        
-        return done(null, user);
       } catch (error) {
         return done(error);
       }
     }),
   );
 
-  passport.serializeUser((user, done) => {
-    done(null, user.id);
-  });
-  
+  passport.serializeUser((user, done) => done(null, user.id));
   passport.deserializeUser(async (id: number, done) => {
     try {
       const user = await storage.getUser(id);
@@ -88,163 +71,79 @@ export function setupAuth(app: Express) {
     }
   });
 
-  // Student Registration
-  app.post("/api/register", async (req, res, next) => {
+  // Register a student
+  app.post("/api/register/student", async (req, res, next) => {
     try {
-      // Validate request body
-      const validatedData = insertUserSchema.parse(req.body);
-      
-      // Verify student ID exists and is not already registered
-      const student = await storage.getStudentByStudentId(validatedData.username);
-      
-      if (!student) {
-        return res.status(400).json({ message: "Invalid student ID. Please contact your administrator." });
+      const { studentId, firstName, lastName, email, password, departmentId, courseId, levelId } = req.body;
+
+      // Check if student ID is verified
+      const verifiedId = await storage.getVerifiedStudentId(studentId);
+      if (!verifiedId) {
+        return res.status(400).json({ message: "Student ID not found in verified list" });
       }
-      
-      if (student.isRegistered) {
-        return res.status(400).json({ message: "Student ID is already registered." });
+
+      if (verifiedId.isRegistered) {
+        return res.status(400).json({ message: "Student ID is already registered" });
       }
-      
-      // Check if username already exists
-      const existingUser = await storage.getUserByUsername(validatedData.username);
+
+      // Check if username (studentId) is already taken
+      const existingUser = await storage.getUserByUsername(studentId);
       if (existingUser) {
-        return res.status(400).json({ message: "Username already exists" });
+        return res.status(400).json({ message: "Student ID is already registered as a username" });
       }
-      
-      // Hash password
-      const hashedPassword = await hashPassword(validatedData.password);
-      
+
       // Create user
+      const hashedPassword = await hashPassword(password);
       const user = await storage.createUser({
-        ...validatedData,
+        username: studentId,
         password: hashedPassword,
-        role: 'student',
-        department: student.department
+        firstName,
+        lastName,
+        email,
+        role: UserRole.STUDENT
       });
-      
-      // Update student record to mark as registered
-      await storage.updateStudentRegistration(validatedData.username, user.id);
-      
-      // Log activity
-      await storage.logActivity(
-        user.id, 
-        "Registration", 
-        `User ${user.username} registered`,
-        req.ip
-      );
-      
-      // Log user in
+
+      // Create student profile
+      const student = await storage.createStudent({
+        userId: user.id,
+        studentId,
+        departmentId,
+        courseId,
+        levelId
+      });
+
+      // Login the user automatically
       req.login(user, (err) => {
         if (err) return next(err);
-        
         // Return user without password
         const { password, ...userWithoutPassword } = user;
         res.status(201).json(userWithoutPassword);
       });
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ errors: error.errors });
-      }
-      next(error);
+    } catch (error: any) {
+      console.error("Registration error:", error);
+      res.status(500).json({ message: error.message || "Failed to register" });
     }
   });
 
-  // Admin account registration (for development)
-  app.post("/api/admin/register", async (req, res, next) => {
-    try {
-      // This endpoint should be disabled in production
-      if (app.get("env") === "production") {
-        return res.status(404).json({ message: "Not found" });
-      }
-      
-      // Validate request body
-      const validatedData = insertUserSchema.parse(req.body);
-      
-      // Check if username already exists
-      const existingUser = await storage.getUserByUsername(validatedData.username);
-      if (existingUser) {
-        return res.status(400).json({ message: "Username already exists" });
-      }
-      
-      // Hash password
-      const hashedPassword = await hashPassword(validatedData.password);
-      
-      // Create admin user
-      const user = await storage.createUser({
-        ...validatedData,
-        password: hashedPassword,
-        role: 'admin'
-      });
-      
-      // Log activity
-      await storage.logActivity(
-        user.id, 
-        "Admin Registration", 
-        `Admin ${user.username} registered`,
-        req.ip
-      );
-      
-      // Log user in
-      req.login(user, (err) => {
-        if (err) return next(err);
-        
-        // Return user without password
-        const { password, ...userWithoutPassword } = user;
-        res.status(201).json(userWithoutPassword);
-      });
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ errors: error.errors });
-      }
-      next(error);
-    }
-  });
-
-  // Login
+  // Login endpoint
   app.post("/api/login", (req, res, next) => {
-    try {
-      // Validate request body
-      loginUserSchema.parse(req.body);
-      
-      passport.authenticate("local", (err, user, info) => {
-        if (err) {
-          return next(err);
-        }
-        
-        if (!user) {
-          return res.status(401).json({ message: info?.message || "Invalid credentials" });
-        }
-        
-        req.login(user, (loginErr) => {
-          if (loginErr) {
-            return next(loginErr);
-          }
-          
-          // Return user without password
-          const { password, ...userWithoutPassword } = user;
-          return res.status(200).json(userWithoutPassword);
-        });
-      })(req, res, next);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ errors: error.errors });
+    passport.authenticate("local", (err: Error, user: Express.User, info: any) => {
+      if (err) return next(err);
+      if (!user) {
+        return res.status(401).json({ message: info?.message || "Invalid username or password" });
       }
-      next(error);
-    }
+
+      req.login(user, (loginErr) => {
+        if (loginErr) return next(loginErr);
+        // Return user without password
+        const { password, ...userWithoutPassword } = user;
+        return res.json(userWithoutPassword);
+      });
+    })(req, res, next);
   });
 
-  // Logout
+  // Logout endpoint
   app.post("/api/logout", (req, res, next) => {
-    // Log activity before logging out
-    if (req.isAuthenticated()) {
-      storage.logActivity(
-        req.user.id, 
-        "Logout", 
-        `User ${req.user.username} logged out`,
-        req.ip
-      ).catch(console.error);
-    }
-    
     req.logout((err) => {
       if (err) return next(err);
       res.sendStatus(200);
@@ -253,47 +152,32 @@ export function setupAuth(app: Express) {
 
   // Get current user
   app.get("/api/user", (req, res) => {
-    if (!req.isAuthenticated()) {
-      return res.sendStatus(401);
-    }
+    if (!req.isAuthenticated()) return res.status(401).json({ message: "Not authenticated" });
     
+    // Return user without password
     const { password, ...userWithoutPassword } = req.user;
     res.json(userWithoutPassword);
   });
-  
-  // Authentication middleware
-  const isAuthenticated = (req: Request, res: Express.Response, next: Express.NextFunction) => {
-    if (req.isAuthenticated()) {
-      return next();
-    }
-    res.status(401).json({ message: "Unauthorized" });
-  };
-  
-  // Admin role middleware
-  const isAdmin = (req: Request, res: Express.Response, next: Express.NextFunction) => {
+
+  // Middleware to check if user is authenticated
+  app.use("/api/admin/*", (req, res, next) => {
     if (!req.isAuthenticated()) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Authentication required" });
     }
     
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: "Forbidden: Admin access required" });
+    if (req.user.role !== UserRole.ADMIN) {
+      return res.status(403).json({ message: "Admin privileges required" });
     }
     
     next();
-  };
-  
-  // Student role middleware
-  const isStudent = (req: Request, res: Express.Response, next: Express.NextFunction) => {
+  });
+
+  // Middleware to check if student is authenticated
+  app.use("/api/student/*", (req, res, next) => {
     if (!req.isAuthenticated()) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
-    
-    if (req.user.role !== 'student') {
-      return res.status(403).json({ message: "Forbidden: Student access required" });
+      return res.status(401).json({ message: "Authentication required" });
     }
     
     next();
-  };
-  
-  return { isAuthenticated, isAdmin, isStudent };
+  });
 }
